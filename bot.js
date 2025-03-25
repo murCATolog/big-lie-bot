@@ -3,8 +3,8 @@ import { Telegraf, Markup } from "telegraf";
 
 // імпортмуємо модуль fs з NodeJS для роботи файловою системою асинхорнно
 import fs from 'fs/promises';
-import { quote } from "telegraf/format";
 
+// шлях до JSON файлів
 const USERS_ID_JSON = './users_id.json';
 const QUOTE_JSON = './quotes.json';
 
@@ -12,10 +12,14 @@ const QUOTE_JSON = './quotes.json';
 class QuoteBot extends Telegraf {
   constructor(token) {
     super(token); // токен боту (метод успадкований з класу Telegraf)
-    this.activeGen = true;    // стан активності автоматичних цитат
+    this.chatId = null;
     this.activeUsers = [];    // масив юзерів, які підписалися на отримання автоповідомлень
     this.quotes = [];     // тут обʼєкт з цитатами
     this.quoteIndex = 0;    // індекс початкової цитати
+
+    // інфа про активацію надсилання автоцитат
+    this.activeGen = true;  // стан активності автоматичних цитат
+    this.bufferDate = null; // буферна дата =)
 
     // КНОПКИ БОТА
     // назви кнопок
@@ -24,13 +28,17 @@ class QuoteBot extends Telegraf {
       on: 'Присилати 1 цитату щодня',
       off: 'Не присилати цитату щодня',
     };
-  }
+  };
 
-  // отримуємо дані про юзерів із user_id.json
-  async getUsers() {
+  // отримуємо дані про юзерів із user_id.json і записуємо нові id
+  async getUsers(context = null) {
     try{
       const readUsersFile = await fs.readFile(USERS_ID_JSON, 'utf-8');
       this.activeUsers = JSON.parse(readUsersFile); // перетворюємо json у об'єкт
+      if (!this.activeUsers.includes(context.chat.id)) {  // фільтр вже істнуючих id
+        this.activeUsers.push(context.chat.id); // додаємо новий id у об'єкт
+        await fs.writeFile(USERS_ID_JSON, JSON.stringify(this.activeUsers, null, 2)); // парсимо об'єкт у файл і записуємо
+      };  
     }
     catch(error){
       console.error('Помилка при збереженні файлу users_id.json:', error);
@@ -54,8 +62,10 @@ class QuoteBot extends Telegraf {
 
   // обробка всіх подій
   eventKeys() {
-    // інфа при сатрі бота
+    // інфа при старі бота
     this.start(async (context) => {
+      // запуск метода додавання id чату при старті
+      await this.getUsers(context);
       try {
         await context.replyWithPhoto({ source: './img/main.jpg' });
       } catch (error) {
@@ -69,8 +79,8 @@ class QuoteBot extends Telegraf {
     });
 
     // генерація цитати одразу
-    this.action('generate', (context) => {
-      context.reply(this.getQuote());
+    this.action('generate', async (context) => {
+      context.reply(await this.getQuote());
     });
 
     // вимикання автогенерації
@@ -80,38 +90,37 @@ class QuoteBot extends Telegraf {
     });
 
     // вмикання автогенерації
-    this.action('on', (context) => {
+    this.action('on', async (context) => {
         this.activeGen = true;
-        if (!this.activeUsers.includes(context.chat.id)) {
-            this.activeUsers.push(context.chat.id);
-        };
+        await this.getUsers(context);  // додаємо id чату
         context.reply('Порядочно! Генерація цитат УВІМКНЕНА!', this.getButtonsMenu());
       });
   }
+
 
   // зчитуємо цитати з файлу
   async parseQuote() {
     try {
       const quotesData = await fs.readFile(QUOTE_JSON, 'utf-8');
       this.quotes = JSON.parse(quotesData);
-      //return this.quotes;
     }
     catch(error) {
       console.error('Помилка зчитування файлу цитат: ' + error);
       this.quotes = [];
-      //return this.quotes;
     }
   };
+
   // отримуємо цитату з масиву
   async getQuote() {
     try{
-      await this.parseQuote();  // чекаємо зчитування фалу цитат
+      await this.parseQuote();  // чекаємо зчитування файлу цитат
       if (this.quotes.length > 0) {
         if (this.quoteIndex >= this.quotes.length) {
         this.quoteIndex = 0;  // скидаємо індекс, якщо вийшли за межі
         };
         let newQuote = `${this.quotes[this.quoteIndex].quote}\n— ${this.quotes[this.quoteIndex].author}`;
         this.quoteIndex++;
+        console.log(newQuote);
         return newQuote;
       } else {
         return 'Список цитат порожній!';
@@ -125,22 +134,19 @@ class QuoteBot extends Telegraf {
   
   // метод, що слідкує за часом
   timeWatcher() {
-    const getHour = () => {
-        let currentHour = new Date().getHours();
-        return currentHour;
+    setInterval(async () => {
+      let currnetDate = new Date().getDate();  // поточна дата
+      let currentHour = new Date().getHours(); // поточний час
+      if(this.bufferDate == null) {
+        this.bufferDate = currnetDate;
+      }
+      if(this.bufferDate == currnetDate && currentHour >= 10 && this.activeGen == true) {
+        await this.telegram.sendMessage(7786433459, await this.getQuote());
+        this.bufferDate = currnetDate + 1;
       };
-    setInterval(() => {
-        getHour();
-        // код не дописано
-        const nowDate = new Date().getDate();
-        console.log(nowDate);
-        if (getHour() >= 10 && getHour() <= 20) {
-            this.activeUsers.forEach((id) => {
-                this.telegram.sendMessage(id, this.getQuote());
-            });
-        };
-    },10000);
+    }, 3000);
   };
+
   // ініціалізація методів
   async init() {
     await this.getUsers(); // чекаємо користувачів
@@ -149,8 +155,9 @@ class QuoteBot extends Telegraf {
   };
 };
 
+// анонімка самовкликаюча функція для запуску бота
 (async () => {
-  const BigLiesBot = new QuoteBot('ТВІЙ ТОКЕН');
+  const BigLiesBot = new QuoteBot('7570011602:AAG9gpgzgg_MFxJBKVjFBhm99kG79_f9TTU');
   await BigLiesBot.init(); // чекаємо підготовку
   BigLiesBot.launch();           // запускаємо бота
 })();
