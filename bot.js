@@ -12,7 +12,6 @@ const QUOTE_JSON = './quotes.json';
 class QuoteBot extends Telegraf {
   constructor(token) {
     super(token); // токен боту (метод успадкований з класу Telegraf)
-    this.chatId = null;
     this.activeUsers = [];    // масив юзерів, які підписалися на отримання автоповідомлень
     this.quotes = [];     // тут обʼєкт з цитатами
     this.quoteIndex = 0;    // індекс початкової цитати
@@ -30,24 +29,7 @@ class QuoteBot extends Telegraf {
     };
   };
 
-  // отримуємо дані про юзерів із user_id.json і записуємо нові id
-  async getUsers(context = null) {
-    try{
-      const readUsersFile = await fs.readFile(USERS_ID_JSON, 'utf-8');
-      this.activeUsers = JSON.parse(readUsersFile); // перетворюємо json у об'єкт
-      if (!this.activeUsers.includes(context.chat.id)) {  // фільтр вже істнуючих id
-        this.activeUsers.push(context.chat.id); // додаємо новий id у об'єкт
-        await fs.writeFile(USERS_ID_JSON, JSON.stringify(this.activeUsers, null, 2)); // парсимо об'єкт у файл і записуємо
-      };  
-    }
-    catch(error){
-      console.error('Помилка при збереженні файлу users_id.json:', error);
-      this.activeUsers = [];  //повертаємо пустий масив у разі помилки
-    }
-    
-  };
-
-  // генерація меню в залежності від on/off
+    // генерація меню в залежності від on/off
   getButtonsMenu() {
     const startKeys = Markup.inlineKeyboard([
       [Markup.button.callback(this.keysNames.generate, 'generate')],
@@ -58,13 +40,14 @@ class QuoteBot extends Telegraf {
       [Markup.button.callback(this.keysNames.off, 'off')]
     ]);
     return this.activeGen ? stopKeys : startKeys;
-  }
+  };
 
-  // обробка всіх подій
+  // ОБРОБКА ВСІХ ПОДІЙ
   eventKeys() {
     // інфа при старі бота
     this.start(async (context) => {
       // запуск метода додавання id чату при старті
+      this.chatId = context.chat.id;
       await this.getUsers(context);
       try {
         await context.replyWithPhoto({ source: './img/main.jpg' });
@@ -80,12 +63,14 @@ class QuoteBot extends Telegraf {
 
     // генерація цитати одразу
     this.action('generate', async (context) => {
-      context.reply(await this.getQuote());
+      context.reply(await this.getQuote(), this.getButtonsMenu());
     });
 
     // вимикання автогенерації
-    this.action('off', (context) => {
+    this.action('off', async (context) => {
       this.activeGen = false;
+      this.activeUsers = this.activeUsers.filter(elementId => elementId !== context.chat.id);
+      await fs.writeFile(USERS_ID_JSON, JSON.stringify(this.activeUsers, null, 2)); // записуємо об'єкт у файл
       context.reply('Головєшка ВИМКНУВ автоматичну генерацію цитат. Ти вчинив як п...', this.getButtonsMenu());
     });
 
@@ -95,8 +80,24 @@ class QuoteBot extends Telegraf {
         await this.getUsers(context);  // додаємо id чату
         context.reply('Порядочно! Генерація цитат УВІМКНЕНА!', this.getButtonsMenu());
       });
-  }
+  };
 
+  //МЕТОДИ, ЩО ПРАЦЮЮТЬ З JSON
+  // отримуємо дані про юзерів із user_id.json і записуємо нові id
+  async getUsers(context = null) {
+    try{
+      const readUsersFile = await fs.readFile(USERS_ID_JSON, 'utf-8');
+      this.activeUsers = JSON.parse(readUsersFile); // перетворюємо json у об'єкт
+      if (context && !this.activeUsers.includes(context.chat.id)) {  // фільтр вже істнуючих id
+        this.activeUsers.push(context.chat.id); // додаємо новий id у об'єкт
+        await fs.writeFile(USERS_ID_JSON, JSON.stringify(this.activeUsers, null, 2)); // записуємо об'єкт у файл і записуємо
+      };  
+    }
+    catch(error){
+      console.error('Помилка при збереженні файлу users_id.json:', error);
+      this.activeUsers = [];  //повертаємо пустий масив у разі помилки
+    }
+  };
 
   // зчитуємо цитати з файлу
   async parseQuote() {
@@ -120,14 +121,13 @@ class QuoteBot extends Telegraf {
         };
         let newQuote = `${this.quotes[this.quoteIndex].quote}\n— ${this.quotes[this.quoteIndex].author}`;
         this.quoteIndex++;
-        console.log(newQuote);
         return newQuote;
       } else {
         return 'Список цитат порожній!';
       };
     }
     catch(error){
-      console.error('Помилка отримання цитати: ' + error)
+      console.error('Помилка отримання цитати: ' + error);
       return 'Упс! Чомусь цитата не завантажилась!😢\nПовідом про помилку: \n@murCATolog';
     }
   };
@@ -141,10 +141,17 @@ class QuoteBot extends Telegraf {
         this.bufferDate = currnetDate;
       }
       if(this.bufferDate == currnetDate && currentHour >= 10 && this.activeGen == true) {
-        await this.telegram.sendMessage(7786433459, await this.getQuote());
+        for(let id of this.activeUsers) { // перебір всіх елементів масиву з id і відправка їм повідомлень
+          try {
+            await this.telegram.sendMessage(id, await this.getQuote());
+          }
+          catch {
+            console.error(`Користувача з id ${id} не знайдено`);
+          }
+        };
         this.bufferDate = currnetDate + 1;
       };
-    }, 3000);
+    }, 30000);
   };
 
   // ініціалізація методів
@@ -159,5 +166,5 @@ class QuoteBot extends Telegraf {
 (async () => {
   const BigLiesBot = new QuoteBot('7570011602:AAG9gpgzgg_MFxJBKVjFBhm99kG79_f9TTU');
   await BigLiesBot.init(); // чекаємо підготовку
-  BigLiesBot.launch();           // запускаємо бота
+  BigLiesBot.launch();     // запускаємо бота
 })();
